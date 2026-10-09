@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function memberDoc(g) {
+      return /databases/$(db)/documents/groups/$(g)/members/$(request.auth.uid);
+    }
+    function isActive(g) {
+      return exists(memberDoc(g)) && get(memberDoc(g)).data.status == 'active';
+    }
+    function isAdmin(g) {
+      return isActive(g) && get(memberDoc(g)).data.role == 'admin';
+    }
+
+    match /users/{uid} {
+      allow read, write: if request.auth.uid == uid;
+    }
+
+    match /inviteCodes/{code} {
+      allow read: if request.auth != null;
+      allow create: if isAdmin(request.resource.data.groupId);
+      allow update, delete: if isAdmin(resource.data.groupId);
+    }
+
+    match /groups/{g} {
+      allow create: if request.auth != null
+                    && request.resource.data.createdBy == request.auth.uid;
+      allow read: if isActive(g);
+      allow update, delete: if isAdmin(g);
+
+      match /members/{uid} {
+        // A pending member may read only their own doc (to see their status).
+        allow read: if isActive(g) || request.auth.uid == uid;
+        allow create: if request.auth.uid == uid && (
+          request.resource.data.status == 'pending' ||
+          get(/databases/$(db)/documents/groups/$(g)).data.createdBy == request.auth.uid
+        );
+        allow update: if isAdmin(g);
+        allow delete: if isAdmin(g) || request.auth.uid == uid;
+      }
+
+      match /places/{p} {
+        allow read, write: if isActive(g);
+      }
+
+      match /savedRoutes/{r} {
+        allow read: if isActive(g);
+        allow create: if isActive(g) && request.resource.data.ownerUid == request.auth.uid;
+        allow update, delete: if isActive(g) && resource.data.ownerUid == request.auth.uid;
+      }
+    }
+
+    match /trips/{t} {
+      allow read: if resource.data.travelerUid == request.auth.uid
+                  || isActive(resource.data.groupId);
+      allow create: if request.resource.data.travelerUid == request.auth.uid
+                    && isActive(request.resource.data.groupId);
+      allow update: if resource.data.travelerUid == request.auth.uid
+        || (isActive(resource.data.groupId)
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['reroute', 'lastAlert']));
+      allow delete: if resource.data.travelerUid == request.auth.uid
+                    || isAdmin(resource.data.groupId);
+    }
+  }
+}
